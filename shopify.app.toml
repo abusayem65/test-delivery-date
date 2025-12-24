@@ -1,0 +1,122 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "cd7c8b8609be29ea3ad5fbc24e92e5d6"
+name = "test-delivery-date"
+application_url = "https://example.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
+
+[webhooks]
+api_version = "2026-01"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_products,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions"
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]
+
+# ============================================================================
+# DELIVERY RULES METAOBJECT DEFINITIONS
+# ============================================================================
+
+# Delivery City Configuration
+[metaobjects.app.delivery_city]
+name = "Delivery City"
+display_name_field = "name"
+access.admin = "merchant_read"
+access.storefront = "public_read"
+
+[metaobjects.app.delivery_city.fields.name]
+name = "City Name"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.delivery_city.fields.is_special]
+name = "Is Special City"
+description = "Special cities have stricter delivery rules"
+type = "boolean"
+
+[metaobjects.app.delivery_city.fields.cutoff_time]
+name = "Cutoff Time"
+description = "Same-day delivery cutoff in HH:mm format (e.g., 14:00)"
+type = "single_line_text_field"
+
+# Delivery Time Slot Configuration
+[metaobjects.app.delivery_time_slot]
+name = "Delivery Time Slot"
+display_name_field = "label"
+access.admin = "merchant_read"
+access.storefront = "public_read"
+
+[metaobjects.app.delivery_time_slot.fields.label]
+name = "Display Label"
+description = "e.g., 09:30 AM - 12:00 PM"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.delivery_time_slot.fields.start_time]
+name = "Start Time"
+description = "HH:mm format (24-hour)"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.delivery_time_slot.fields.end_time]
+name = "End Time"
+description = "HH:mm format (24-hour)"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.delivery_time_slot.fields.is_globally_disabled]
+name = "Globally Disabled"
+description = "Disable this slot across all dates and cities"
+type = "boolean"
+
+# Disabled Delivery Dates
+[metaobjects.app.disabled_delivery_date]
+name = "Disabled Delivery Date"
+display_name_field = "date"
+access.admin = "merchant_read"
+access.storefront = "public_read"
+
+[metaobjects.app.disabled_delivery_date.fields.date]
+name = "Date"
+description = "Date when delivery is not available"
+type = "date"
+required = true
+
+[metaobjects.app.disabled_delivery_date.fields.reason]
+name = "Reason"
+description = "Optional reason (e.g., Holiday, Maintenance)"
+type = "single_line_text_field"
+
+# Slot Disable Rules (for date-specific or city+date-specific disabling)
+[metaobjects.app.slot_disable_rule]
+name = "Slot Disable Rule"
+access.admin = "merchant_read"
+
+[metaobjects.app.slot_disable_rule.fields.slot]
+name = "Time Slot"
+type = "metaobject_reference<$app:delivery_time_slot>"
+required = true
+
+[metaobjects.app.slot_disable_rule.fields.date]
+name = "Date"
+description = "Specific date this rule applies to"
+type = "date"
+
+[metaobjects.app.slot_disable_rule.fields.city]
+name = "City"
+description = "Specific city this rule applies to (optional)"
+type = "metaobject_reference<$app:delivery_city>"
