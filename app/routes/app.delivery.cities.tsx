@@ -1,4 +1,4 @@
-import { useAppBridge } from "@shopify/app-bridge-react";
+import { CallbackEvent } from "@shopify/polaris-types";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useEffect, useState } from "react";
 import type {
@@ -6,37 +6,27 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useLoaderData } from "react-router";
+import prisma from "../db.server";
 import {
-  DELIVERY_CITIES_QUERY,
-  transformToDeliveryCity,
+  createCity,
+  loadCities,
+  updateCity,
 } from "../services/deliveryConfigService";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  const response = await admin.graphql(DELIVERY_CITIES_QUERY, {
-    variables: { first: 100 },
-  });
-  const data = await response.json();
-
-  const cities = (data.data?.metaobjects?.nodes ?? []).map(
-    (node: {
-      id: string;
-      handle: string;
-      fields: Array<{ key: string; value: string | null }>;
-    }) => ({
-      ...transformToDeliveryCity(node),
-      gid: node.id,
-    }),
-  );
+  const cities = await loadCities(prisma, shop);
 
   return { cities };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
 
@@ -46,17 +36,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const cutoffTime = formData.get("cutoffTime") as string;
 
     // Check if city name already exists
-    const existingResponse = await admin.graphql(DELIVERY_CITIES_QUERY, {
-      variables: { first: 100 },
-    });
-    const existingData = await existingResponse.json();
-    const existingCities = (existingData.data?.metaobjects?.nodes ?? []).map(
-      (node: {
-        id: string;
-        handle: string;
-        fields: Array<{ key: string; value: string | null }>;
-      }) => transformToDeliveryCity(node),
-    );
+    const existingCities = await loadCities(prisma, shop);
     const cityExists = existingCities.some(
       (city: { name: string }) =>
         city.name.toLowerCase() === name.trim().toLowerCase(),
@@ -69,65 +49,72 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     }
 
-    const response = await admin.graphql(
-      `#graphql
-        mutation CreateCity($metaobject: MetaobjectCreateInput!) {
-          metaobjectCreate(metaobject: $metaobject) {
-            metaobject {
-              id
-              handle
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-      `,
-      {
-        variables: {
-          metaobject: {
-            type: "$app:delivery_city",
-            fields: [
-              { key: "name", value: name.trim() },
-              { key: "is_special", value: String(isSpecial) },
-              { key: "cutoff_time", value: cutoffTime || "" },
-            ],
-          },
-        },
-      },
-    );
+    try {
+      const newCity = await createCity(prisma, shop, {
+        name: name.trim(),
+        isSpecial,
+        cutoffTime,
+      });
 
-    const result = await response.json();
-    return {
-      success: !result.data?.metaobjectCreate?.userErrors?.length,
-      result,
-    };
+      return {
+        success: true,
+        city: newCity,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to create city",
+      };
+    }
+  }
+
+  if (intent === "update") {
+    const id = parseInt(formData.get("id") as string);
+    const name = formData.get("name") as string;
+    const isSpecial = formData.get("isSpecial") === "true";
+    const cutoffTime = formData.get("cutoffTime") as string;
+
+    try {
+      const updated = await updateCity(prisma, shop, id, {
+        name: name.trim(),
+        isSpecial,
+        cutoffTime,
+      });
+
+      if (!updated) {
+        return {
+          success: false,
+          error: "City not found",
+        };
+      }
+
+      return {
+        success: true,
+        city: updated,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to update city",
+      };
+    }
   }
 
   if (intent === "delete") {
-    const id = formData.get("id") as string;
+    const id = parseInt(formData.get("id") as string);
 
-    const response = await admin.graphql(
-      `#graphql
-        mutation DeleteCity($id: ID!) {
-          metaobjectDelete(id: $id) {
-            deletedId
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-      `,
-      { variables: { id } },
-    );
+    try {
+      await updateCity(prisma, shop, id, { isActive: false });
 
-    const result = await response.json();
-    return {
-      success: !result.data?.metaobjectDelete?.userErrors?.length,
-      result,
-    };
+      return {
+        success: true,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to delete city",
+      };
+    }
   }
 
   return { success: false, error: "Unknown intent" };
@@ -135,146 +122,203 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function DeliveryCities() {
   const { cities } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher<typeof action>();
-  const shopify = useAppBridge();
 
-  const [cityName, setCityName] = useState("");
-  const [cutoffTime, setCutoffTime] = useState("");
-  const [isSpecial, setIsSpecial] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
 
-  const isSubmitting = fetcher.state !== "idle";
-
+  // Debounce search query
   useEffect(() => {
-    if (fetcher.data?.success) {
-      shopify.toast.show("City saved successfully");
-      // Reset form after successful submission
-      setCityName("");
-      setCutoffTime("");
-      setIsSpecial(false);
-    } else if (fetcher.data?.error) {
-      shopify.toast.show(fetcher.data.error, { isError: true });
-    }
-  }, [fetcher.data, shopify]);
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 300);
 
-  const handleCreate = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [searchQuery]);
 
-    fetcher.submit(
-      {
-        intent: "create",
-        name: cityName,
-        cutoffTime: cutoffTime,
-        isSpecial: isSpecial ? "true" : "false",
-      },
-      { method: "POST" },
-    );
+  // Filter cities based on debounced query
+  const filteredCities = debouncedQuery
+    ? cities.filter((city) =>
+        city.name.toLowerCase().includes(debouncedQuery.toLowerCase()),
+      )
+    : cities;
+
+  const handleSearchInput = (event: CallbackEvent<"s-search-field">) => {
+    const query = event.currentTarget.value;
+    setSearchQuery(query);
   };
 
   return (
     <s-page heading="Delivery Cities">
       <s-link slot="breadcrumb-actions" href="/app/delivery">
-        ← Back to Delivery Settings
+         Back to Delivery Settings
       </s-link>
 
-      <s-section heading="Add New City">
-        <form onSubmit={handleCreate}>
-          <s-stack direction="block" gap="base">
-            <s-text-field
-              label="City Name"
-              value={cityName}
-              placeholder="e.g., Dubai"
-              required
-              onInput={(e) =>
-                setCityName(
-                  (e.currentTarget as unknown as { value: string }).value,
-                )
-              }
-            />
+      <s-link
+        slot="primary-action"
+        href="/app/delivery/city/new"
+      >
+        Add City
+      </s-link>
 
-            <div>
-              <label
-                htmlFor="cutoffTime"
-                style={{
-                  display: "block",
-                  marginBottom: "4px",
-                  fontWeight: 500,
-                  fontSize: "14px",
-                }}
-              >
-                Cutoff Time
-              </label>
-              <input
-                id="cutoffTime"
-                type="time"
-                value={cutoffTime}
-                onChange={(e) => setCutoffTime(e.target.value)}
-                style={{
-                  padding: "8px 12px",
-                  border: "1px solid #8c9196",
-                  borderRadius: "8px",
-                  fontSize: "14px",
-                }}
+      {/* === */}
+      {/* Empty state */}
+      {/* This should only be visible if the merchant has not created any puzzles yet. */}
+      {/* === */}
+      {cities.length === 0 && (
+        <s-section accessibilityLabel="Empty state section">
+          <s-grid gap="base" justifyItems="center" paddingBlock="large-400">
+            <s-box maxInlineSize="200px" maxBlockSize="200px">
+              {/* aspectRatio should match the actual image dimensions (width/height) */}
+              <s-image
+                aspectRatio="1/0.5"
+                src="https://cdn.shopify.com/static/images/polaris/patterns/callout.png"
+                alt="A stylized graphic of four characters, each holding a puzzle piece"
               />
-            </div>
+            </s-box>
+            <s-grid justifyItems="center" maxInlineSize="450px" gap="base">
+              <s-stack alignItems="center">
+                <s-heading>No Delivery Cities </s-heading>
+                <s-paragraph>
+                  Add delivery city to manage delivery availability and cutoff
+                  times.
+                </s-paragraph>
+              </s-stack>
+              <s-button-group>
+                <s-button
+                  slot="primary-action"
+                  accessibilityLabel="Add a new puzzle"
+                  href="/app/delivery/city/new"
+                >
+                  {" "}
+                  Add city{" "}
+                </s-button>
+              </s-button-group>
+            </s-grid>
+          </s-grid>
+        </s-section>
+      )}
 
-            <s-checkbox
-              label="Special City (stricter rules)"
-              checked={isSpecial}
-              onChange={() => setIsSpecial(!isSpecial)}
+      {/* === */}
+      {/* Table */}
+      {/* This should only be visible if the merchant has created one or more puzzles. */}
+      {/* === */}
+      <s-section
+        padding="none"
+        accessibilityLabel="Delivery cities table section"
+      >
+        <s-table variant="auto">
+          <s-grid slot="filters" gap="small-200" gridTemplateColumns="1fr auto">
+            <s-search-field
+              label="Search Cities"
+              labelAccessibilityVisibility="exclusive"
+              placeholder="Searching all cities"
+              value={searchQuery}
+              onInput={handleSearchInput}
+            ></s-search-field>
+            <s-button
+              icon="sort"
+              variant="secondary"
+              accessibilityLabel="Sort"
+              interestFor="sort-tooltip"
+              commandFor="sort-actions"
             />
-
-            <s-button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? "Adding..." : "Add City"}
-            </s-button>
-          </s-stack>
-        </form>
-      </s-section>
-
-      <s-section heading="Configured Cities">
-        {cities.length === 0 ? (
-          <s-paragraph>
-            No cities configured yet. Add your first city above.
-          </s-paragraph>
-        ) : (
-          <s-stack direction="block" gap="small">
-            {cities.map(
-              (city: {
-                gid: string;
-                id: string;
-                name: string;
-                isSpecial: boolean;
-                cutoffTime?: string;
-              }) => (
-                <s-box key={city.gid} padding="base" background="subdued">
-                  <s-stack direction="inline" gap="base" alignItems="center">
-                    <s-stack direction="block" gap="small" inlineSize="auto">
-                      <s-text type="strong">{city.name}</s-text>
-                      <s-stack direction="inline" gap="small">
-                        {city.isSpecial && (
-                          <s-badge tone="warning">Special</s-badge>
-                        )}
-                        {city.cutoffTime && (
-                          <s-badge>Cutoff: {city.cutoffTime}</s-badge>
-                        )}
-                      </s-stack>
-                    </s-stack>
-                    <fetcher.Form method="POST" style={{ marginLeft: "auto" }}>
-                      <input type="hidden" name="intent" value="delete" />
-                      <input type="hidden" name="id" value={city.gid} />
-                      <s-button
-                        variant="tertiary"
-                        tone="critical"
-                        type="submit"
-                        disabled={isSubmitting}
-                      >
-                        Delete
-                      </s-button>
-                    </fetcher.Form>
-                  </s-stack>
+            <s-tooltip id="sort-tooltip">
+              <s-text>Sort</s-text>
+            </s-tooltip>
+            <s-popover id="sort-actions">
+              <s-stack gap="none">
+                <s-box padding="small">
+                  <s-choice-list label="Sort by" name="Sort by">
+                    <s-choice value="puzzle-name" selected>
+                      City name
+                    </s-choice>
+                    <s-choice value="created">Created</s-choice>
+                    <s-choice value="status">Status</s-choice>
+                  </s-choice-list>
                 </s-box>
-              ),
-            )}
-          </s-stack>
+                <s-divider />
+                <s-box padding="small">
+                  <s-choice-list label="Order by" name="Order by">
+                    <s-choice value="product-title" selected>
+                      A-Z
+                    </s-choice>
+                    <s-choice value="created">Z-A</s-choice>
+                  </s-choice-list>
+                </s-box>
+              </s-stack>
+            </s-popover>
+          </s-grid>
+          {cities.length > 0 && filteredCities.length > 0 && (
+            <>
+              <s-table-header-row>
+                <s-table-header listSlot="primary">Name</s-table-header>
+                <s-table-header>Special City</s-table-header>
+                <s-table-header>Cuttoff Time</s-table-header>
+                <s-table-header>Status</s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {filteredCities.map((city) => (
+                  <s-table-row
+                    key={city.id}
+                    clickDelegate={`clickable-${city.id}`}
+                  >
+                    <s-table-cell>
+                      <s-link
+                        href={`/app/delivery/city/${city.id}`}
+                        id={`clickable-${city.id}`}
+                        accessibilityLabel="Mountain View puzzle thumbnail"
+                      >
+                        {city.name.toUpperCase()}
+                      </s-link>
+                    </s-table-cell>
+                    <s-table-cell>
+                      {city.isSpecial ? (
+                        <s-badge color="strong">Yes</s-badge>
+                      ) : (
+                        <s-badge color="base">No</s-badge>
+                      )}
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-text color="base">
+                        {city.cutoffTime || "Not set"}{" "}
+                      </s-text>
+                    </s-table-cell>
+                    <s-table-cell>
+                      {city.isActive ? (
+                        <s-badge color="base" tone="success">
+                          Active
+                        </s-badge>
+                      ) : (
+                        <s-badge color="base" tone="critical">
+                          Inactive
+                        </s-badge>
+                      )}
+                    </s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </>
+          )}
+        </s-table>
+        {/* === */}
+        {/* No search results */}
+        {/* === */}
+        {cities.length > 0 && filteredCities.length === 0 && (
+          <s-section accessibilityLabel="No results section">
+            <s-grid gap="base" justifyItems="center" paddingBlock="large-400">
+              <s-grid justifyItems="center" maxInlineSize="450px" gap="base">
+                <s-stack alignItems="center">
+                  <s-heading>No cities found</s-heading>
+                  <s-paragraph>
+                    Try adjusting your search to find what you&apos;re looking
+                    for.
+                  </s-paragraph>
+                </s-stack>
+              </s-grid>
+            </s-grid>
+          </s-section>
         )}
       </s-section>
     </s-page>

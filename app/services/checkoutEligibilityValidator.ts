@@ -140,13 +140,17 @@ export function validateDeliveryDate(deliveryDate: string): string[] {
 /**
  * Validates the delivery time slot field
  *
- * @param deliveryTimeSlot - The delivery time slot value (slot ID)
+ * @param deliveryTimeSlot - The delivery time slot value (slot ID as number)
  * @returns Array of error messages (empty if valid)
  */
-export function validateDeliveryTimeSlot(deliveryTimeSlot: string): string[] {
+export function validateDeliveryTimeSlot(deliveryTimeSlot: number): string[] {
   const errors: string[] = [];
 
-  if (!isNonEmpty(deliveryTimeSlot)) {
+  if (
+    !deliveryTimeSlot ||
+    typeof deliveryTimeSlot !== "number" ||
+    deliveryTimeSlot <= 0
+  ) {
     errors.push(ERROR_MESSAGES.DELIVERY_TIME_SLOT_REQUIRED);
   }
 
@@ -246,7 +250,7 @@ export function createEmptyCheckoutFields(): CheckoutFields {
     phoneNumber: "",
     deliveryAddress: "",
     deliveryDate: "",
-    deliveryTimeSlot: "",
+    deliveryTimeSlot: 0,
   };
 }
 

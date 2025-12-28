@@ -144,6 +144,65 @@ export function normalizeDisabledDates(disabledDates: string[]): Set<string> {
 }
 
 /**
+ * Checks if a date falls within a disable rule's date range
+ *
+ * @param date - The date to check in YYYY-MM-DD format
+ * @param startDate - Rule start date in YYYY-MM-DD format
+ * @param endDate - Rule end date in YYYY-MM-DD format (optional)
+ * @returns True if date falls within the range
+ */
+export function isDateInDisableRange(
+  date: string,
+  startDate: string,
+  endDate?: string,
+): boolean {
+  if (date < startDate) return false;
+  if (endDate && date > endDate) return false;
+  return true;
+}
+
+/**
+ * Build a set of disabled dates from date disable rules
+ *
+ * Expands date ranges into individual dates for efficient lookup.
+ *
+ * @param dateRules - Array of date disable rules
+ * @param cityId - Optional city ID to filter city-specific rules
+ * @returns Set of disabled dates in YYYY-MM-DD format
+ */
+export function buildDisabledDateSet(
+  dateRules: Array<{ startDate: string; endDate?: string; cityId?: number }>,
+  cityId?: number,
+): Set<string> {
+  const disabled = new Set<string>();
+
+  for (const rule of dateRules) {
+    // Include both global rules and city-specific rules if cityId provided
+    const applies = !rule.cityId || (cityId && rule.cityId === cityId);
+    if (!applies) continue;
+
+    const startDate = normalizeDate(rule.startDate);
+    const endDate = rule.endDate ? normalizeDate(rule.endDate) : null;
+
+    if (!startDate) continue;
+
+    // Add all dates in range
+    let current = parseDate(startDate);
+    const end = endDate ? parseDate(endDate) : current;
+
+    if (!current || !end) continue;
+
+    while (current <= end) {
+      disabled.add(formatDateToString(current));
+      current = new Date(current);
+      current.setDate(current.getDate() + 1);
+    }
+  }
+
+  return disabled;
+}
+
+/**
  * Generates an array of available delivery dates
  *
  * Starting from the given date, returns dates that are not in the disabled list.
@@ -151,7 +210,8 @@ export function normalizeDisabledDates(disabledDates: string[]): Set<string> {
  *
  * @param startDate - The first possible delivery date
  * @param daysToShow - Number of days to check for availability
- * @param disabledDates - Array of disabled dates (supports multiple formats)
+ * @param disabledDates - Array of disabled dates (supports multiple formats) OR date rules with ranges
+ * @param cityId - Optional city ID to filter city-specific disable rules
  * @returns Array of available dates in YYYY-MM-DD format
  *
  * @example
@@ -160,20 +220,46 @@ export function normalizeDisabledDates(disabledDates: string[]): Set<string> {
  * // returns ["2024-12-24", "2024-12-27", "2024-12-28", "2024-12-29", "2024-12-30"]
  *
  * @example
- * // With no disabled dates
- * getAvailableDates(new Date(2024, 0, 1), 3, [])
- * // returns ["2024-01-01", "2024-01-02", "2024-01-03"]
+ * // With date ranges
+ * const rules = [
+ *   { startDate: "2024-12-25", endDate: "2024-12-26" } // Disable Dec 25-26
+ * ];
+ * getAvailableDates(start, 7, rules, undefined)
+ * // returns ["2024-12-24", "2024-12-27", "2024-12-28", ...]
  */
 export function getAvailableDates(
   startDate: Date,
   daysToShow: number,
-  disabledDates: string[],
+  disabledDates:
+    | string[]
+    | Array<{ startDate: string; endDate?: string; cityId?: number }>,
+  cityId?: number,
 ): string[] {
   if (daysToShow <= 0) {
     return [];
   }
 
-  const disabledSet = normalizeDisabledDates(disabledDates);
+  // Build disabled date set based on input type
+  let disabledSet: Set<string>;
+  if (Array.isArray(disabledDates) && disabledDates.length > 0) {
+    if (typeof disabledDates[0] === "string") {
+      // Old format: array of date strings
+      disabledSet = normalizeDisabledDates(disabledDates as string[]);
+    } else {
+      // New format: array of date rules with ranges
+      disabledSet = buildDisabledDateSet(
+        disabledDates as Array<{
+          startDate: string;
+          endDate?: string;
+          cityId?: number;
+        }>,
+        cityId,
+      );
+    }
+  } else {
+    disabledSet = new Set();
+  }
+
   const availableDates: string[] = [];
 
   // Create a copy to avoid mutating the input

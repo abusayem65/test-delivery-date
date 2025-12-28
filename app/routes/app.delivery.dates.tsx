@@ -7,113 +7,64 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
-import { DISABLED_DATES_QUERY } from "../services/deliveryConfigService";
+import prisma from "../db.server";
+import {
+  createDateDisableRule,
+  loadDateDisableRules,
+} from "../services/deliveryConfigService";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  const response = await admin.graphql(DISABLED_DATES_QUERY, {
-    variables: { first: 250 },
-  });
-  const data = await response.json();
-
-  const dates = (data.data?.metaobjects?.nodes ?? []).map(
-    (node: {
-      id: string;
-      handle: string;
-      fields: Array<{ key: string; value: string | null }>;
-    }) => {
-      const dateField = node.fields.find(
-        (f: { key: string }) => f.key === "date",
-      );
-      const reasonField = node.fields.find(
-        (f: { key: string }) => f.key === "reason",
-      );
-      return {
-        gid: node.id,
-        handle: node.handle,
-        date: dateField?.value ?? "",
-        reason: reasonField?.value ?? "",
-      };
-    },
-  );
-
-  // Sort by date
-  dates.sort((a: { date: string }, b: { date: string }) =>
-    a.date.localeCompare(b.date),
-  );
+  const dates = await loadDateDisableRules(prisma, shop);
 
   return { dates };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "create") {
-    const date = formData.get("date") as string;
+    const startDateStr = formData.get("date") as string;
     const reason = formData.get("reason") as string;
 
-    const response = await admin.graphql(
-      `#graphql
-        mutation CreateDisabledDate($metaobject: MetaobjectCreateInput!) {
-          metaobjectCreate(metaobject: $metaobject) {
-            metaobject {
-              id
-              handle
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-      `,
-      {
-        variables: {
-          metaobject: {
-            type: "$app:disabled_delivery_date",
-            fields: [
-              { key: "date", value: date },
-              { key: "reason", value: reason || "" },
-            ],
-          },
-        },
-      },
-    );
+    try {
+      await createDateDisableRule(prisma, shop, {
+        startDate: new Date(startDateStr),
+        endDate: null,
+        reason: reason || null,
+      });
 
-    const result = await response.json();
-    return {
-      success: !result.data?.metaobjectCreate?.userErrors?.length,
-      result,
-    };
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to create rule",
+      };
+    }
   }
 
   if (intent === "delete") {
-    const id = formData.get("id") as string;
+    const id = parseInt(formData.get("id") as string, 10);
 
-    const response = await admin.graphql(
-      `#graphql
-        mutation DeleteDisabledDate($id: ID!) {
-          metaobjectDelete(id: $id) {
-            deletedId
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-      `,
-      { variables: { id } },
-    );
+    try {
+      await prisma.disableDateRules.update({
+        where: { id },
+        data: { isActive: false },
+      });
 
-    const result = await response.json();
-    return {
-      success: !result.data?.metaobjectDelete?.userErrors?.length,
-      result,
-    };
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to delete rule",
+      };
+    }
   }
 
   return { success: false, error: "Unknown intent" };
@@ -195,39 +146,40 @@ export default function DisabledDates() {
           </s-paragraph>
         ) : (
           <s-stack direction="block" gap="small">
-            {dates.map(
-              (item: { gid: string; date: string; reason: string }) => (
-                <s-box
-                  key={item.gid}
-                  padding="base"
-                  background={isPast(item.date) ? "subdued" : "base"}
-                >
-                  <s-stack direction="inline" gap="base" alignItems="center">
-                    <s-stack direction="block" gap="small" inlineSize="auto">
-                      <s-text type="strong">{formatDate(item.date)}</s-text>
-                      <s-stack direction="inline" gap="small">
-                        {item.reason && <s-badge>{item.reason}</s-badge>}
-                        {isPast(item.date) && (
-                          <s-badge tone="neutral">Past</s-badge>
-                        )}
-                      </s-stack>
+            {dates.map((item) => (
+              <s-box
+                key={item.id}
+                padding="base"
+                background={isPast(item.startDate) ? "subdued" : "base"}
+              >
+                <s-stack direction="inline" gap="base" alignItems="center">
+                  <s-stack direction="block" gap="small" inlineSize="auto">
+                    <s-text type="strong">
+                      {formatDate(item.startDate)}
+                      {item.endDate && ` - ${formatDate(item.endDate)}`}
+                    </s-text>
+                    <s-stack direction="inline" gap="small">
+                      {item.reason && <s-badge>{item.reason}</s-badge>}
+                      {isPast(item.startDate) && (
+                        <s-badge tone="neutral">Past</s-badge>
+                      )}
                     </s-stack>
-                    <fetcher.Form method="POST" style={{ marginLeft: "auto" }}>
-                      <input type="hidden" name="intent" value="delete" />
-                      <input type="hidden" name="id" value={item.gid} />
-                      <s-button
-                        variant="tertiary"
-                        tone="critical"
-                        type="submit"
-                        disabled={isSubmitting}
-                      >
-                        Remove
-                      </s-button>
-                    </fetcher.Form>
                   </s-stack>
-                </s-box>
-              ),
-            )}
+                  <fetcher.Form method="POST" style={{ marginLeft: "auto" }}>
+                    <input type="hidden" name="intent" value="delete" />
+                    <input type="hidden" name="id" value={item.id} />
+                    <s-button
+                      variant="tertiary"
+                      tone="critical"
+                      type="submit"
+                      disabled={isSubmitting}
+                    >
+                      Remove
+                    </s-button>
+                  </fetcher.Form>
+                </s-stack>
+              </s-box>
+            ))}
           </s-stack>
         )}
       </s-section>

@@ -11,29 +11,55 @@
  */
 export interface DeliveryCity {
   /** Unique identifier for the city */
-  id: string;
+  id: number;
   /** Display name of the city */
   name: string;
+  /** Shopify shop domain */
+  shop: string;
+  /** Whether this city is active */
+  isActive: boolean;
   /** Whether this city has special delivery restrictions */
   isSpecial: boolean;
   /** Cutoff time for same-day delivery in HH:mm format (24-hour) */
-  cutoffTime?: string;
+  cutoffTime: string;
+  /** Associated time slots */
+  timeSlots?: TimeSlot[];
 }
 
 /**
  * Represents a delivery time slot
  */
 export interface TimeSlot {
-  /** Unique identifier for the slot (e.g., "slot_1", "slot_2") */
-  id: string;
-  /** Human-readable label (e.g., "09:30 AM - 12:00 PM") */
-  label: string;
+  /** Unique identifier for the slot */
+  id: number;
+  /** Shopify shop domain */
+  shop: string;
   /** Start time in HH:mm format (24-hour) */
   startTime: string;
   /** End time in HH:mm format (24-hour) */
   endTime: string;
-  /** Whether this slot is disabled globally across all dates/cities */
-  isGloballyDisabled: boolean;
+  /** Whether this slot is active */
+  isActive: boolean;
+  /** Human-readable label (e.g., "09:30 AM - 12:00 PM") */
+  label?: string;
+}
+
+/**
+ * Rule for disabling delivery dates
+ */
+export interface DateDisableRule {
+  /** ID of the rule */
+  id: number;
+  /** Shopify shop domain */
+  shop: string;
+  /** City ID (optional - if null, applies to all cities) */
+  cityId?: number;
+  /** Start date of the disable period (YYYY-MM-DD format) */
+  startDate: string;
+  /** End date of the disable period (YYYY-MM-DD format) */
+  endDate?: string;
+  /** Reason for disabling */
+  reason?: string;
 }
 
 /**
@@ -41,24 +67,34 @@ export interface TimeSlot {
  * Rules are applied in priority order: global → date-specific → city+date-specific
  */
 export interface SlotDisableRule {
-  /** ID of the slot to disable */
-  slotId: string;
-  /** Specific date to disable (YYYY-MM-DD format). If omitted, applies to all dates */
-  date?: string;
-  /** Specific city to disable for. If omitted, applies to all cities */
-  cityId?: string;
+  /** ID of the rule */
+  id: number;
+  /** Shopify shop domain */
+  shop: string;
+  /** ID of the time slot to disable */
+  timeSlotId: number;
+  /** Specific city to disable for (optional - if null, applies to all cities) */
+  cityId?: number;
+  /** Start date of the disable period (YYYY-MM-DD format) */
+  startDate: string;
+  /** End date of the disable period (YYYY-MM-DD format) */
+  endDate?: string;
+  /** Reason for disabling */
+  reason?: string;
 }
 
 /**
- * Complete delivery configuration loaded from Metaobjects or theme settings
+ * Complete delivery configuration loaded from database
  */
 export interface DeliveryConfig {
+  /** Shopify shop domain */
+  shop: string;
   /** Available delivery cities */
   cities: DeliveryCity[];
   /** Available time slots */
   timeSlots: TimeSlot[];
-  /** Dates when delivery is not available (YYYY-MM-DD format) */
-  disabledDates: string[];
+  /** Rules for disabling delivery dates */
+  dateDisableRules: DateDisableRule[];
   /** Rules for disabling specific slots */
   slotDisableRules: SlotDisableRule[];
 }
@@ -83,8 +119,8 @@ export interface CheckoutFields {
   deliveryAddress: string;
   /** Selected delivery date (YYYY-MM-DD format) */
   deliveryDate: string;
-  /** Selected delivery time slot ID */
-  deliveryTimeSlot: string;
+  /** Selected delivery time slot ID (numeric) */
+  deliveryTimeSlot: number;
 }
 
 /**

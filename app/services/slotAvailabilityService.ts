@@ -3,11 +3,11 @@
  *
  * Determines which time slots are available based on disable rules.
  * Rules are applied in priority order:
- * 1. Global disable (slot.isGloballyDisabled)
- * 2. Date-specific disable (rule has date but no cityId)
- * 3. City+date-specific disable (rule has both date and cityId)
+ * 1. Slot inactivity (slot.isActive === false)
+ * 2. Date-range disable (rule with matching startDate/endDate range)
+ * 3. City+date-range disable (rule with cityId and matching date range)
  *
- * A slot is disabled if ANY applicable rule disables it.
+ * A slot is disabled if ANY applicable rule disables it during the selected date.
  */
 
 import type {
@@ -17,17 +17,35 @@ import type {
 } from "./types/delivery";
 
 /**
- * Checks if a slot is globally disabled
+ * Check if a date falls within a disable rule's date range
+ *
+ * @param date - The date to check in YYYY-MM-DD format
+ * @param startDate - Rule start date in YYYY-MM-DD format
+ * @param endDate - Rule end date in YYYY-MM-DD format (optional)
+ * @returns True if date falls within the range
+ */
+function isDateInRange(
+  date: string,
+  startDate: string,
+  endDate?: string,
+): boolean {
+  if (date < startDate) return false;
+  if (endDate && date > endDate) return false;
+  return true;
+}
+
+/**
+ * Checks if a slot is disabled due to inactivity
  *
  * @param slot - The time slot to check
  * @returns Object with disabled status and reason if applicable
  */
-function checkGlobalDisable(slot: TimeSlot): {
+function checkSlotActive(slot: TimeSlot): {
   disabled: boolean;
   reason?: string;
 } {
-  if (slot.isGloballyDisabled) {
-    return { disabled: true, reason: "Globally disabled" };
+  if (!slot.isActive) {
+    return { disabled: true, reason: "Slot is inactive" };
   }
   return { disabled: false };
 }
@@ -41,16 +59,24 @@ function checkGlobalDisable(slot: TimeSlot): {
  * @returns Object with disabled status and reason if applicable
  */
 function checkDateSpecificDisable(
-  slotId: string,
+  slotId: number,
   date: string,
   rules: SlotDisableRule[],
 ): { disabled: boolean; reason?: string } {
   const dateRule = rules.find(
-    (rule) => rule.slotId === slotId && rule.date === date && !rule.cityId,
+    (rule) =>
+      rule.timeSlotId === slotId &&
+      !rule.cityId &&
+      isDateInRange(date, rule.startDate, rule.endDate),
   );
 
   if (dateRule) {
-    return { disabled: true, reason: `Disabled on ${date}` };
+    return {
+      disabled: true,
+      reason: dateRule.reason
+        ? `Disabled: ${dateRule.reason}`
+        : `Disabled on ${date}`,
+    };
   }
   return { disabled: false };
 }
@@ -65,18 +91,25 @@ function checkDateSpecificDisable(
  * @returns Object with disabled status and reason if applicable
  */
 function checkCityDateDisable(
-  slotId: string,
+  slotId: number,
   date: string,
-  cityId: string,
+  cityId: number,
   rules: SlotDisableRule[],
 ): { disabled: boolean; reason?: string } {
   const cityDateRule = rules.find(
     (rule) =>
-      rule.slotId === slotId && rule.date === date && rule.cityId === cityId,
+      rule.timeSlotId === slotId &&
+      rule.cityId === cityId &&
+      isDateInRange(date, rule.startDate, rule.endDate),
   );
 
   if (cityDateRule) {
-    return { disabled: true, reason: `Disabled for this city on ${date}` };
+    return {
+      disabled: true,
+      reason: cityDateRule.reason
+        ? `Disabled: ${cityDateRule.reason}`
+        : `Disabled for this city on ${date}`,
+    };
   }
   return { disabled: false };
 }
@@ -93,22 +126,22 @@ function checkCityDateDisable(
 export function checkSlotAvailability(
   slot: TimeSlot,
   date: string,
-  cityId: string | null,
+  cityId: number | null,
   rules: SlotDisableRule[],
 ): SlotAvailabilityResult {
-  // Priority 1: Global disable
-  const globalCheck = checkGlobalDisable(slot);
-  if (globalCheck.disabled) {
-    return { slot, disabled: true, reason: globalCheck.reason };
+  // Priority 1: Check if slot is active
+  const activeCheck = checkSlotActive(slot);
+  if (activeCheck.disabled) {
+    return { slot, disabled: true, reason: activeCheck.reason };
   }
 
-  // Priority 2: Date-specific disable
+  // Priority 2: Date-range disable
   const dateCheck = checkDateSpecificDisable(slot.id, date, rules);
   if (dateCheck.disabled) {
     return { slot, disabled: true, reason: dateCheck.reason };
   }
 
-  // Priority 3: City+date-specific disable (only if city is selected)
+  // Priority 3: City+date-range disable (only if city is selected)
   if (cityId) {
     const cityDateCheck = checkCityDateDisable(slot.id, date, cityId, rules);
     if (cityDateCheck.disabled) {
@@ -134,32 +167,23 @@ export function checkSlotAvailability(
  *
  * @example
  * const slots = [
- *   { id: "slot_1", label: "9AM - 12PM", startTime: "09:00", endTime: "12:00", isGloballyDisabled: false },
- *   { id: "slot_2", label: "12PM - 3PM", startTime: "12:00", endTime: "15:00", isGloballyDisabled: true }
+ *   { id: 1, shop: "example.myshopify.com", startTime: "09:00", endTime: "12:00", isActive: true, label: "9AM - 12PM" },
+ *   { id: 2, shop: "example.myshopify.com", startTime: "12:00", endTime: "15:00", isActive: false, label: "12PM - 3PM" }
  * ];
  * const rules = [
- *   { slotId: "slot_1", date: "2024-12-25" } // Disable slot_1 on Christmas
+ *   { id: 1, shop: "example.myshopify.com", timeSlotId: 1, startDate: "2024-12-25" } // Disable slot 1 on Christmas
  * ];
  *
  * getAvailableSlots(slots, "2024-12-25", null, rules)
  * // returns [
  * //   { slot: slots[0], disabled: true, reason: "Disabled on 2024-12-25" },
- * //   { slot: slots[1], disabled: true, reason: "Globally disabled" }
+ * //   { slot: slots[1], disabled: true, reason: "Slot is inactive" }
  * // ]
- *
- * @example
- * // City-specific disable
- * const rules = [
- *   { slotId: "slot_1", date: "2024-12-26", cityId: "city_remote" }
- * ];
- *
- * getAvailableSlots(slots, "2024-12-26", "city_remote", rules)
- * // slot_1 disabled for city_remote, but available for other cities
  */
 export function getAvailableSlots(
   slots: TimeSlot[],
   date: string,
-  cityId: string | null,
+  cityId: number | null,
   rules: SlotDisableRule[],
 ): SlotAvailabilityResult[] {
   if (!slots || !Array.isArray(slots)) {
@@ -167,7 +191,7 @@ export function getAvailableSlots(
   }
 
   if (!rules || !Array.isArray(rules)) {
-    // If no rules, only check global disable
+    // If no rules, only check if slot is active
     return slots.map((slot) => checkSlotAvailability(slot, date, cityId, []));
   }
 
@@ -184,13 +208,13 @@ export function getAvailableSlots(
  * @returns Array of available TimeSlots only
  *
  * @example
- * getEnabledSlots(slots, "2024-12-26", "city_1", rules)
+ * getEnabledSlots(slots, "2024-12-26", 1, rules)
  * // returns only slots that are not disabled
  */
 export function getEnabledSlots(
   slots: TimeSlot[],
   date: string,
-  cityId: string | null,
+  cityId: number | null,
   rules: SlotDisableRule[],
 ): TimeSlot[] {
   return getAvailableSlots(slots, date, cityId, rules)
@@ -209,10 +233,10 @@ export function getEnabledSlots(
  * @returns True if the slot exists and is available
  */
 export function isSlotAvailable(
-  slotId: string,
+  slotId: number,
   slots: TimeSlot[],
   date: string,
-  cityId: string | null,
+  cityId: number | null,
   rules: SlotDisableRule[],
 ): boolean {
   const slot = slots.find((s) => s.id === slotId);

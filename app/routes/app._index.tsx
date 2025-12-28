@@ -1,13 +1,15 @@
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
-import { fetchDeliveryConfig } from "../services/deliveryConfigService";
+import prisma from "../db.server";
+import { loadDeliveryConfig } from "../services/deliveryConfigService";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  const config = await fetchDeliveryConfig(admin);
+  const config = await loadDeliveryConfig(prisma, shop);
 
   // Calculate some derived stats
   const specialCitiesCount = config.cities.filter((c) => c.isSpecial).length;
@@ -18,7 +20,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     specialCitiesCount,
     citiesWithCutoff,
     slotsCount: config.timeSlots.length,
-    disabledDatesCount: config.disabledDates.length,
+    disabledDatesCount: config.dateDisableRules.length,
     rulesCount: config.slotDisableRules.length,
     // Check if app is configured
     isConfigured: config.cities.length > 0 && config.timeSlots.length > 0,

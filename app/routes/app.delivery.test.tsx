@@ -6,6 +6,7 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
+import prisma from "../db.server";
 import {
   calculateCartDelay,
   getAvailableDates,
@@ -14,7 +15,7 @@ import {
   isSameDayDeliveryAvailable,
   validateCheckout,
 } from "../services";
-import { fetchDeliveryConfig } from "../services/deliveryConfigService";
+import { loadDeliveryConfig } from "../services/deliveryConfigService";
 import type {
   CartProduct,
   CheckoutFields,
@@ -24,16 +25,18 @@ import type {
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
-  const config = await fetchDeliveryConfig(admin);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+  const config = await loadDeliveryConfig(prisma, shop);
   return { config };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
   const formData = await request.formData();
 
-  const config = await fetchDeliveryConfig(admin);
+  const config = await loadDeliveryConfig(prisma, shop);
 
   // Parse cart products from form
   const tagsInput = formData.get("tags") as string;
@@ -44,7 +47,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const cartProducts: CartProduct[] = [{ tags }];
 
   // Get selected city
-  const cityId = formData.get("cityId") as string;
+  const cityIdStr = formData.get("cityId") as string;
+  const cityId = cityIdStr ? parseInt(cityIdStr) : null;
   const selectedCity = config.cities.find((c) => c.id === cityId);
 
   // Calculate results
@@ -67,7 +71,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const availableDates = getAvailableDates(
     minimumDate,
     14,
-    config.disabledDates,
+    config.dateDisableRules,
+    cityId ?? undefined,
   );
 
   // Get available slots for first available date
@@ -75,7 +80,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const slotsForDate = getAvailableSlots(
     config.timeSlots,
     firstAvailableDate,
-    cityId || null,
+    cityId,
     config.slotDisableRules,
   );
 
@@ -85,7 +90,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     phoneNumber: (formData.get("phoneNumber") as string) || "",
     deliveryAddress: (formData.get("deliveryAddress") as string) || "",
     deliveryDate: firstAvailableDate,
-    deliveryTimeSlot: slotsForDate.find((s) => !s.disabled)?.slot.id ?? "",
+    deliveryTimeSlot: slotsForDate.find((s) => !s.disabled)?.slot.id ?? 0,
   };
 
   const checkoutValidation = validateCheckout(checkoutFields);
@@ -289,8 +294,8 @@ export default function DeliveryTest() {
             <s-text type="strong">Time Slots:</s-text> {config.timeSlots.length}
           </s-paragraph>
           <s-paragraph>
-            <s-text type="strong">Disabled Dates:</s-text>{" "}
-            {config.disabledDates.length}
+            <s-text type="strong">Date Disable Rules:</s-text>{" "}
+            {config.dateDisableRules.length}
           </s-paragraph>
           <s-paragraph>
             <s-text type="strong">Slot Rules:</s-text>{" "}

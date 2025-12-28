@@ -7,176 +7,77 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
+import prisma from "../db.server";
 import {
-  DELIVERY_CITIES_QUERY,
-  SLOT_DISABLE_RULES_QUERY,
-  TIME_SLOTS_QUERY,
-  transformToDeliveryCity,
-  transformToTimeSlot,
+  createSlotDisableRule,
+  loadCities,
+  loadSlotDisableRules,
+  loadTimeSlots,
 } from "../services/deliveryConfigService";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  const [citiesResponse, slotsResponse, rulesResponse] = await Promise.all([
-    admin.graphql(DELIVERY_CITIES_QUERY, { variables: { first: 100 } }),
-    admin.graphql(TIME_SLOTS_QUERY, { variables: { first: 100 } }),
-    admin.graphql(SLOT_DISABLE_RULES_QUERY, { variables: { first: 250 } }),
+  const [cities, slots, rules] = await Promise.all([
+    loadCities(prisma, shop),
+    loadTimeSlots(prisma, shop),
+    loadSlotDisableRules(prisma, shop),
   ]);
-
-  const [citiesData, slotsData, rulesData] = await Promise.all([
-    citiesResponse.json(),
-    slotsResponse.json(),
-    rulesResponse.json(),
-  ]);
-
-  const cities = (citiesData.data?.metaobjects?.nodes ?? []).map(
-    (node: {
-      id: string;
-      handle: string;
-      fields: Array<{ key: string; value: string | null }>;
-    }) => ({
-      ...transformToDeliveryCity(node),
-      gid: node.id,
-    }),
-  );
-
-  const slots = (slotsData.data?.metaobjects?.nodes ?? []).map(
-    (node: {
-      id: string;
-      handle: string;
-      fields: Array<{ key: string; value: string | null }>;
-    }) => ({
-      ...transformToTimeSlot(node),
-      gid: node.id,
-    }),
-  );
-
-  const rules = (rulesData.data?.metaobjects?.nodes ?? []).map(
-    (node: {
-      id: string;
-      handle: string;
-      fields: Array<{
-        key: string;
-        value: string | null;
-        reference?: { id: string; handle: string } | null;
-      }>;
-    }) => {
-      const slotField = node.fields.find(
-        (f: { key: string }) => f.key === "slot",
-      );
-      const dateField = node.fields.find(
-        (f: { key: string }) => f.key === "date",
-      );
-      const cityField = node.fields.find(
-        (f: { key: string }) => f.key === "city",
-      );
-
-      return {
-        gid: node.id,
-        handle: node.handle,
-        slotId: slotField?.reference?.handle ?? "",
-        slotGid: slotField?.reference?.id ?? "",
-        date: dateField?.value ?? "",
-        cityId: cityField?.reference?.handle ?? "",
-        cityGid: cityField?.reference?.id ?? "",
-      };
-    },
-  );
 
   return { cities, slots, rules };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "create") {
-    const slotGid = formData.get("slotGid") as string;
-    const date = formData.get("date") as string;
-    const cityGid = formData.get("cityGid") as string;
+    const timeSlotId = parseInt(formData.get("timeSlotId") as string);
+    const startDateStr = formData.get("startDate") as string;
+    const endDateStr = formData.get("endDate") as string;
+    const cityIdStr = formData.get("cityId") as string;
+    const reason = formData.get("reason") as string;
 
-    const fields: Array<{ key: string; value: string }> = [
-      { key: "slot", value: slotGid },
-    ];
+    try {
+      await createSlotDisableRule(prisma, shop, {
+        timeSlotId,
+        startDate: new Date(startDateStr),
+        endDate: endDateStr ? new Date(endDateStr) : undefined,
+        cityId: cityIdStr ? parseInt(cityIdStr) : undefined,
+        reason: reason || undefined,
+      });
 
-    if (date) {
-      fields.push({ key: "date", value: date });
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to create rule",
+      };
     }
-    if (cityGid) {
-      fields.push({ key: "city", value: cityGid });
-    }
-
-    const response = await admin.graphql(
-      `#graphql
-        mutation CreateRule($metaobject: MetaobjectCreateInput!) {
-          metaobjectCreate(metaobject: $metaobject) {
-            metaobject {
-              id
-              handle
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-      `,
-      {
-        variables: {
-          metaobject: {
-            type: "$app:slot_disable_rule",
-            fields,
-          },
-        },
-      },
-    );
-
-    const result = await response.json();
-    return {
-      success: !result.data?.metaobjectCreate?.userErrors?.length,
-      result,
-    };
   }
 
   if (intent === "delete") {
-    const id = formData.get("id") as string;
+    const id = parseInt(formData.get("id") as string);
 
-    const response = await admin.graphql(
-      `#graphql
-        mutation DeleteRule($id: ID!) {
-          metaobjectDelete(id: $id) {
-            deletedId
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-      `,
-      { variables: { id } },
-    );
+    try {
+      await prisma.disableTimeSlotRules.delete({
+        where: { id },
+      });
 
-    const result = await response.json();
-    return {
-      success: !result.data?.metaobjectDelete?.userErrors?.length,
-      result,
-    };
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to delete rule",
+      };
+    }
   }
 
   return { success: false, error: "Unknown intent" };
-};
-
-type City = { gid: string; id: string; name: string };
-type Slot = { gid: string; id: string; label: string };
-type Rule = {
-  gid: string;
-  handle: string;
-  slotId: string;
-  date: string;
-  cityId: string;
 };
 
 export default function SlotDisableRules() {
@@ -210,35 +111,47 @@ export default function SlotDisableRules() {
     fetcher.submit(
       {
         intent: "create",
-        slotGid: selectedSlot,
+        timeSlotId: selectedSlot,
         date: selectedDate,
-        cityGid: selectedCity,
+        cityId: selectedCity,
       },
       { method: "POST" },
     );
   };
 
-  const getSlotLabel = (slotId: string) => {
-    const slot = slots.find((s: Slot) => s.id === slotId);
-    return slot?.label ?? slotId;
+  const getSlotLabel = (slotId: number) => {
+    const slot = slots.find((s) => s.id === slotId);
+    return slot?.label ?? slotId.toString();
   };
 
-  const getCityName = (cityId: string) => {
-    const city = cities.find((c: City) => c.id === cityId);
-    return city?.name ?? cityId;
+  const getCityName = (cityId: number | null | undefined) => {
+    if (!cityId) return "All cities";
+    const city = cities.find((c) => c.id === cityId);
+    return city?.name ?? cityId.toString();
   };
 
-  const formatDate = (dateStr: string) => {
-    if (!dateStr) return "All dates";
+  const formatDate = (startDate: string, endDate?: string | null) => {
+    if (!startDate) return "All dates";
     try {
-      const date = new Date(dateStr + "T00:00:00");
-      return date.toLocaleDateString("en-US", {
+      const start = new Date(startDate + "T00:00:00");
+      const startStr = start.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
         year: "numeric",
       });
+
+      if (!endDate) return startStr;
+
+      const end = new Date(endDate + "T00:00:00");
+      const endStr = end.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+
+      return `${startStr} - ${endStr}`;
     } catch {
-      return dateStr;
+      return startDate;
     }
   };
 
@@ -266,7 +179,7 @@ export default function SlotDisableRules() {
             <s-stack direction="block" gap="base">
               <div>
                 <label
-                  htmlFor="slotGid"
+                  htmlFor="timeSlotId"
                   style={{
                     display: "block",
                     marginBottom: "4px",
@@ -276,7 +189,7 @@ export default function SlotDisableRules() {
                   Time Slot (required)
                 </label>
                 <select
-                  id="slotGid"
+                  id="timeSlotId"
                   value={selectedSlot}
                   onChange={(e) => setSelectedSlot(e.target.value)}
                   required
@@ -288,8 +201,8 @@ export default function SlotDisableRules() {
                   }}
                 >
                   <option value="">Select a time slot...</option>
-                  {slots.map((slot: Slot) => (
-                    <option key={slot.gid} value={slot.gid}>
+                  {slots.map((slot) => (
+                    <option key={slot.id} value={slot.id}>
                       {slot.label}
                     </option>
                   ))}
@@ -323,7 +236,7 @@ export default function SlotDisableRules() {
               {cities.length > 0 && (
                 <div>
                   <label
-                    htmlFor="cityGid"
+                    htmlFor="cityId"
                     style={{
                       display: "block",
                       marginBottom: "4px",
@@ -333,7 +246,7 @@ export default function SlotDisableRules() {
                     City (optional - leave empty for all cities)
                   </label>
                   <select
-                    id="cityGid"
+                    id="cityId"
                     value={selectedCity}
                     onChange={(e) => setSelectedCity(e.target.value)}
                     style={{
@@ -344,8 +257,8 @@ export default function SlotDisableRules() {
                     }}
                   >
                     <option value="">All cities</option>
-                    {cities.map((city: City) => (
-                      <option key={city.gid} value={city.gid}>
+                    {cities.map((city) => (
+                      <option key={city.id} value={city.id}>
                         {city.name}
                       </option>
                     ))}
@@ -369,21 +282,23 @@ export default function SlotDisableRules() {
           </s-paragraph>
         ) : (
           <s-stack direction="block" gap="small">
-            {rules.map((rule: Rule) => (
-              <s-box key={rule.gid} padding="base" background="subdued">
+            {rules.map((rule) => (
+              <s-box key={rule.id} padding="base" background="subdued">
                 <s-stack direction="inline" gap="base" alignItems="center">
                   <s-stack direction="block" gap="small" inlineSize="auto">
-                    <s-text type="strong">{getSlotLabel(rule.slotId)}</s-text>
+                    <s-text type="strong">
+                      {getSlotLabel(rule.timeSlotId)}
+                    </s-text>
                     <s-stack direction="inline" gap="small">
-                      <s-badge>{formatDate(rule.date)}</s-badge>
                       <s-badge>
-                        {rule.cityId ? getCityName(rule.cityId) : "All cities"}
+                        {formatDate(rule.startDate, rule.endDate)}
                       </s-badge>
+                      <s-badge>{getCityName(rule.cityId)}</s-badge>
                     </s-stack>
                   </s-stack>
                   <fetcher.Form method="POST" style={{ marginLeft: "auto" }}>
                     <input type="hidden" name="intent" value="delete" />
-                    <input type="hidden" name="id" value={rule.gid} />
+                    <input type="hidden" name="id" value={rule.id} />
                     <s-button
                       variant="tertiary"
                       tone="critical"

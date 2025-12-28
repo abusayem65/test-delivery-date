@@ -9,26 +9,112 @@ generator client {
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+model Settings {
+  id         Int      @id @default(autoincrement())
+  shop       String
+  cutoffTime String?
+  selectors  String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([shop])
+}
+
+model City {
+  id                   Int                    @id @default(autoincrement())
+  shop                 String
+  name                 String
+  isActive             Boolean                @default(true)
+  isSpecial            Boolean                @default(false)
+  cuttoffTime          String
+  timeSlots            CityTimeSlot[]
+  disableDateRules     DisableDateRules[]
+  disableTimeSlotRules DisableTimeSlotRules[]
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  @@index([shop])
+}
+
+model TimeSlot {
+  id                   Int                    @id @default(autoincrement())
+  shop                 String
+  startTime            String
+  endTime              String
+  isActive             Boolean                @default(true)
+  cities               CityTimeSlot[]
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  disableTimeSlotRules DisableTimeSlotRules[]
+}
+
+model CityTimeSlot {
+  cityId     Int
+  timeSlotId Int
+  city       City     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([cityId, timeSlotId])
+  @@index([cityId])
+  @@index([timeSlotId])
+}
+
+model DisableDateRules {
+  id        Int       @id @default(autoincrement())
+  shop      String
+  cityId    Int? // Optional - if null, applies to all cities
+  city      City?     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime? // Optional - if null, only startDate is disabled
+  reason    String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([cityId])
+  @@index([shop])
+  @@index([startDate, endDate])
+}
+
+model DisableTimeSlotRules {
+  id         Int       @id @default(autoincrement())
+  shop       String
+  timeSlotId Int
+  timeSlot   TimeSlot  @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  cityId     Int? // Optional - if null, applies to all cities
+  city       City?     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  startDate  DateTime
+  endDate    DateTime? // Optional - if null, only startDate is disabled
+  reason     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([timeSlotId])
+  @@index([cityId])
+  @@index([shop])
+  @@index([startDate, endDate])
 }

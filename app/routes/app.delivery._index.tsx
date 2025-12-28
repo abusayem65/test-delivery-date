@@ -1,18 +1,20 @@
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
-import { fetchDeliveryConfig } from "../services/deliveryConfigService";
+import prisma from "../db.server";
+import { loadDeliveryConfig } from "../services/deliveryConfigService";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  const config = await fetchDeliveryConfig(admin);
+  const config = await loadDeliveryConfig(prisma, shop);
 
   return {
     citiesCount: config.cities.length,
     slotsCount: config.timeSlots.length,
-    disabledDatesCount: config.disabledDates.length,
+    disabledDatesCount: config.dateDisableRules.length,
     rulesCount: config.slotDisableRules.length,
   };
 };
@@ -25,10 +27,8 @@ export default function DeliverySettings() {
     <s-page heading="Delivery Settings">
       <s-section heading="Overview">
         <s-paragraph>
-          Manage your delivery rules configuration. All settings are stored as
-          Metaobjects and can be viewed in Shopify Admin under{" "}
-          <s-text type="strong">Content → Metaobjects</s-text>, but can only be
-          edited through this app.
+          Manage your delivery rules configuration. All settings are stored in
+          the database and can be managed through this app.
         </s-paragraph>
       </s-section>
 
